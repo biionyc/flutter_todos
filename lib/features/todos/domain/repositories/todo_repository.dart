@@ -11,6 +11,6 @@ abstract class TodoRepository {
     int id,
     bool completed,
   );
-  Future<Either<Failure, Unit>> deleteTodo(int id);
+  Future<Either<Failure, bool>> deleteTodo(int id);
   Future<Either<Failure, Set<int>>> syncPendingChanges();
 }

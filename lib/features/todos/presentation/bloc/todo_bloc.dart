@@ -9,11 +9,14 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
   final TodoRepository _repository;
   List<TodoEntity> _currentTodos = [];
   String _searchQuery = '';
+  final Set<int> _pendingDeletedIds = {};
 
-  int get _pendingCount => _currentTodos
-      .whereType<TodoModel>()
-      .where((todo) => !todo.isSynced)
-      .length;
+  int get _pendingCount =>
+      _currentTodos
+          .whereType<TodoModel>()
+          .where((todo) => !todo.isSynced)
+          .length +
+      _pendingDeletedIds.length;
 
   List<TodoEntity> get _filteredTodos {
     if (_searchQuery.isEmpty) return _currentTodos;
@@ -218,13 +221,27 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
     emit(TodosLoadSuccess(todos: _filteredTodos, pendingCount: _pendingCount));
     emit(TodoDeleteInProgress());
     final result = await _repository.deleteTodo(event.id);
-    result.fold((failure) {
-      _currentTodos.insert(deletedTodoIndex, deletedTodo);
-      emit(
-        TodosLoadSuccess(todos: _filteredTodos, pendingCount: _pendingCount),
-      );
-      emit(TodoDeleteFailure(message: failure.message));
-    }, (_) => emit(TodoDeleteSuccess()));
+    result.fold(
+      (failure) {
+        _currentTodos.insert(deletedTodoIndex, deletedTodo);
+        emit(
+          TodosLoadSuccess(todos: _filteredTodos, pendingCount: _pendingCount),
+        );
+        emit(TodoDeleteFailure(message: failure.message));
+      },
+      (isPending) {
+        if (isPending) {
+          _pendingDeletedIds.add(event.id);
+          emit(
+            TodosLoadSuccess(
+              todos: _filteredTodos,
+              pendingCount: _pendingCount,
+            ),
+          );
+        }
+        emit(TodoDeleteSuccess());
+      },
+    );
   }
 
   Future<void> _onSyncTodos(
@@ -255,6 +272,7 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
           }
           return todo;
         }).toList();
+        _pendingDeletedIds.removeAll(syncedIds);
         emit(
           TodosLoadSuccess(
             todos: _filteredTodos,

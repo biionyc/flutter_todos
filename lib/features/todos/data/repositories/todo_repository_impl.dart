@@ -147,7 +147,7 @@ class TodoRepositoryImpl implements TodoRepository {
   }
 
   @override
-  Future<Either<Failure, Unit>> deleteTodo(int id) async {
+  Future<Either<Failure, bool>> deleteTodo(int id) async {
     await _localDataSource.softDeleteTodo(id);
 
     if (await _networkInfo.isConnected) {
@@ -155,13 +155,13 @@ class TodoRepositoryImpl implements TodoRepository {
         await _remoteDataSource.deleteTodo(id);
         final db = await _databaseHelper.database;
         await db.delete('todos', where: 'id = ?', whereArgs: [id]);
-        return right(unit);
+        return right(false);
       } on ServerException catch (e) {
         await _localDataSource.restoreTodo(id);
         return left(ServerFailure(message: e.message));
       }
     } else {
-      return right(unit);
+      return right(true);
     }
   }
 
