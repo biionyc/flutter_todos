@@ -28,14 +28,14 @@ class TodoRepositoryImpl implements TodoRepository {
         final todos = await _remoteDataSource.getTodos();
         await _localDataSource.cacheTodos(todos);
         return right(todos);
-      } on ServerException catch (e) {
+      } on ServerException catch (_) {
         try {
           final cached = await _localDataSource.getCachedTodos();
-          return left(
-            ServerFailureWithCache(message: e.message, cachedData: cached),
-          );
+          return right(cached);
         } catch (_) {
-          return left(ServerFailure(message: e.message));
+          return left(
+            const ServerFailure(message: 'Server error and cache fetch failed'),
+          );
         }
       }
     } else {

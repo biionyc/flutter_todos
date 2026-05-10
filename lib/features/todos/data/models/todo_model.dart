@@ -1,14 +1,12 @@
 import '../../domain/entities/todo_entity.dart';
 
 class TodoModel extends TodoEntity {
-  final bool isSynced;
-
   TodoModel({
     required super.id,
     required super.userId,
     required super.title,
     required super.completed,
-    this.isSynced = true,
+    super.isSynced = true,
   });
 
   factory TodoModel.fromJson(Map<String, dynamic> json) {
@@ -41,6 +39,7 @@ class TodoModel extends TodoEntity {
     };
   }
 
+  @override
   TodoModel copyWith({
     int? id,
     int? userId,

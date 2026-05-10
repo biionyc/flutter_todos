@@ -1,5 +1,4 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
-import '../../../../core/error/failures.dart';
 import '../../domain/repositories/todo_repository.dart';
 import '../../domain/entities/todo_entity.dart';
 import 'todo_event.dart';
@@ -49,18 +48,7 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
     final result = await _repository.getTodos();
     result.fold(
       (failure) {
-        if (failure is ServerFailureWithCache) {
-          _currentTodos = failure.cachedData;
-          emit(
-            TodosLoadSuccess(
-              todos: _filteredTodos,
-              pendingCount: _pendingCount,
-            ),
-          );
-          emit(TodosServerError(message: failure.message));
-        } else {
-          emit(TodosLoadFailure(message: failure.message));
-        }
+        emit(TodosLoadFailure(message: failure.message));
       },
       (todos) {
         _currentTodos = todos;
