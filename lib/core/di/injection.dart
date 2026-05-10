@@ -49,7 +49,6 @@ Future<void> setupDI() async {
       remoteDataSource: serviceLocator<TodoRemoteDataSource>(),
       localDataSource: serviceLocator<TodoLocalDataSource>(),
       networkInfo: serviceLocator<NetworkInfo>(),
-      databaseHelper: serviceLocator<DatabaseHelper>(),
     ),
   );
   serviceLocator.registerFactory<TodoBloc>(

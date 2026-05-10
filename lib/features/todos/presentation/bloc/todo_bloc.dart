@@ -1,6 +1,6 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../../../core/error/failures.dart';
 import '../../domain/repositories/todo_repository.dart';
-import '../../data/models/todo_model.dart';
 import '../../domain/entities/todo_entity.dart';
 import 'todo_event.dart';
 import 'todo_state.dart';
@@ -9,14 +9,11 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
   final TodoRepository _repository;
   List<TodoEntity> _currentTodos = [];
   String _searchQuery = '';
-  final Set<int> _pendingDeletedIds = {};
+  int _pendingDeletedCount = 0;
 
   int get _pendingCount =>
-      _currentTodos
-          .whereType<TodoModel>()
-          .where((todo) => !todo.isSynced)
-          .length +
-      _pendingDeletedIds.length;
+      _currentTodos.where((todo) => !todo.isSynced).length +
+      _pendingDeletedCount;
 
   List<TodoEntity> get _filteredTodos {
     if (_searchQuery.isEmpty) return _currentTodos;
@@ -42,26 +39,30 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
     LoadTodosEvent event,
     Emitter<TodoState> emit,
   ) async {
+    final deletedCountResult = await _repository.getPendingDeletedCount();
+    deletedCountResult.fold(
+      (_) => _pendingDeletedCount = 0,
+      (count) => _pendingDeletedCount = count,
+    );
+
     emit(TodosLoadInProgress());
     final result = await _repository.getTodos();
-    await result.fold(
-      (failure) async {
-        final cacheResult = await _repository.getCachedTodosOnly();
-        cacheResult.fold(
-          (_) => emit(TodosLoadFailure(message: failure.message)),
-          (cached) {
-            _currentTodos = cached;
-            emit(
-              TodosLoadSuccess(
-                todos: _filteredTodos,
-                pendingCount: _pendingCount,
-              ),
-            );
-            emit(TodosServerError(message: failure.message));
-          },
-        );
+    result.fold(
+      (failure) {
+        if (failure is ServerFailureWithCache) {
+          _currentTodos = failure.cachedData;
+          emit(
+            TodosLoadSuccess(
+              todos: _filteredTodos,
+              pendingCount: _pendingCount,
+            ),
+          );
+          emit(TodosServerError(message: failure.message));
+        } else {
+          emit(TodosLoadFailure(message: failure.message));
+        }
       },
-      (todos) async {
+      (todos) {
         _currentTodos = todos;
         emit(
           TodosLoadSuccess(todos: _filteredTodos, pendingCount: _pendingCount),
@@ -78,7 +79,7 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
   Future<void> _onAddTodo(AddTodoEvent event, Emitter<TodoState> emit) async {
     final tempId = DateTime.now().millisecondsSinceEpoch;
     _currentTodos = [
-      TodoModel(
+      TodoEntity(
         id: tempId,
         userId: 1,
         title: event.title,
@@ -123,13 +124,7 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
     final original = _currentTodos.firstWhere((todo) => todo.id == event.id);
     _currentTodos = _currentTodos.map((todo) {
       if (todo.id == event.id) {
-        return TodoModel(
-          id: todo.id,
-          userId: todo.userId,
-          title: event.title,
-          completed: todo.completed,
-          isSynced: true,
-        );
+        return todo.copyWith(title: event.title, isSynced: true);
       }
       return todo;
     }).toList();
@@ -147,8 +142,13 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
         emit(TodoUpdateFailure(message: failure.message));
       },
       (updatedTodo) {
-        if (updatedTodo is TodoModel && !updatedTodo.isSynced) {
-          _currentTodos = _markUnsynced(_currentTodos, event.id);
+        if (!updatedTodo.isSynced) {
+          _currentTodos = _currentTodos
+              .map(
+                (todo) =>
+                    todo.id == event.id ? todo.copyWith(isSynced: false) : todo,
+              )
+              .toList();
           emit(
             TodosLoadSuccess(
               todos: _filteredTodos,
@@ -168,13 +168,7 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
     final original = _currentTodos.firstWhere((todo) => todo.id == event.id);
     _currentTodos = _currentTodos.map((todo) {
       if (todo.id == event.id) {
-        return TodoModel(
-          id: todo.id,
-          userId: todo.userId,
-          title: todo.title,
-          completed: event.completed,
-          isSynced: true,
-        );
+        return todo.copyWith(completed: event.completed, isSynced: true);
       }
       return todo;
     }).toList();
@@ -195,8 +189,13 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
         emit(TodoUpdateFailure(message: failure.message));
       },
       (updatedTodo) {
-        if (updatedTodo is TodoModel && !updatedTodo.isSynced) {
-          _currentTodos = _markUnsynced(_currentTodos, event.id);
+        if (!updatedTodo.isSynced) {
+          _currentTodos = _currentTodos
+              .map(
+                (todo) =>
+                    todo.id == event.id ? todo.copyWith(isSynced: false) : todo,
+              )
+              .toList();
           emit(
             TodosLoadSuccess(
               todos: _filteredTodos,
@@ -231,7 +230,7 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
       },
       (isPending) {
         if (isPending) {
-          _pendingDeletedIds.add(event.id);
+          _pendingDeletedCount++;
           emit(
             TodosLoadSuccess(
               todos: _filteredTodos,
@@ -257,22 +256,27 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
       ),
     );
     final result = await _repository.syncPendingChanges();
-    result.fold(
-      (_) => emit(
+    await result.fold(
+      (_) async => emit(
         TodosLoadSuccess(
           todos: _filteredTodos,
           pendingCount: _pendingCount,
           isSyncing: false,
         ),
       ),
-      (syncedIds) {
+      (syncedIds) async {
+        final deletedCountResult = await _repository.getPendingDeletedCount();
+        deletedCountResult.fold(
+          (_) => _pendingDeletedCount = 0,
+          (count) => _pendingDeletedCount = count,
+        );
+
         _currentTodos = _currentTodos.map((todo) {
-          if (syncedIds.contains(todo.id) && todo is TodoModel) {
+          if (syncedIds.contains(todo.id)) {
             return todo.copyWith(isSynced: true);
           }
           return todo;
         }).toList();
-        _pendingDeletedIds.removeAll(syncedIds);
         emit(
           TodosLoadSuccess(
             todos: _filteredTodos,
@@ -285,14 +289,5 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
         }
       },
     );
-  }
-
-  List<TodoEntity> _markUnsynced(List<TodoEntity> todos, int id) {
-    return todos.map((todo) {
-      if (todo.id == id && todo is TodoModel) {
-        return todo.copyWith(isSynced: false);
-      }
-      return todo;
-    }).toList();
   }
 }

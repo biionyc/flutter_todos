@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../../../../core/constants/app_colors.dart';
-import '../../data/models/todo_model.dart';
 import '../../domain/entities/todo_entity.dart';
 
 class TodoListItem extends StatelessWidget {
@@ -19,9 +18,7 @@ class TodoListItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool isSynced = todo is TodoModel
-        ? (todo as TodoModel).isSynced
-        : true;
+    final bool isSynced = todo.isSynced;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),

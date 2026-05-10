@@ -1,5 +1,4 @@
 import 'package:fpdart/fpdart.dart';
-import '../../../../core/database/database_helper.dart';
 import '../../../../core/error/exceptions.dart';
 import '../../../../core/error/failures.dart';
 import '../../../../core/network_info/network_info.dart';
@@ -13,17 +12,14 @@ class TodoRepositoryImpl implements TodoRepository {
   final TodoRemoteDataSource _remoteDataSource;
   final TodoLocalDataSource _localDataSource;
   final NetworkInfo _networkInfo;
-  final DatabaseHelper _databaseHelper;
 
   TodoRepositoryImpl({
     required TodoRemoteDataSource remoteDataSource,
     required TodoLocalDataSource localDataSource,
     required NetworkInfo networkInfo,
-    required DatabaseHelper databaseHelper,
   }) : _remoteDataSource = remoteDataSource,
        _localDataSource = localDataSource,
-       _networkInfo = networkInfo,
-       _databaseHelper = databaseHelper;
+       _networkInfo = networkInfo;
 
   @override
   Future<Either<Failure, List<TodoEntity>>> getTodos() async {
@@ -33,7 +29,14 @@ class TodoRepositoryImpl implements TodoRepository {
         await _localDataSource.cacheTodos(todos);
         return right(todos);
       } on ServerException catch (e) {
-        return left(ServerFailure(message: e.message));
+        try {
+          final cached = await _localDataSource.getCachedTodos();
+          return left(
+            ServerFailureWithCache(message: e.message, cachedData: cached),
+          );
+        } catch (_) {
+          return left(ServerFailure(message: e.message));
+        }
       }
     } else {
       try {
@@ -42,16 +45,6 @@ class TodoRepositoryImpl implements TodoRepository {
       } on CacheException catch (e) {
         return left(CacheFailure(message: e.message));
       }
-    }
-  }
-
-  @override
-  Future<Either<Failure, List<TodoEntity>>> getCachedTodosOnly() async {
-    try {
-      final todos = await _localDataSource.getCachedTodos();
-      return right(todos);
-    } on CacheException catch (e) {
-      return left(CacheFailure(message: e.message));
     }
   }
 
@@ -69,8 +62,7 @@ class TodoRepositoryImpl implements TodoRepository {
     if (await _networkInfo.isConnected) {
       try {
         final serverTodo = await _remoteDataSource.addTodo(title);
-        final db = await _databaseHelper.database;
-        await db.delete('todos', where: 'id = ?', whereArgs: [tempId]);
+        await _localDataSource.hardDeleteTodo(tempId);
         //!dummy api always returns id 201, so we need to use the tempId to prevent unique id crash on local db
         await _localDataSource.insertTodo(
           serverTodo.copyWith(id: tempId, isSynced: true),
@@ -78,8 +70,7 @@ class TodoRepositoryImpl implements TodoRepository {
         //!dummy api always returns id 201, so we need to use the tempId to prevent unique id crash on local db
         return right(serverTodo.copyWith(id: tempId, isSynced: true));
       } on ServerException catch (e) {
-        final db = await _databaseHelper.database;
-        await db.delete('todos', where: 'id = ?', whereArgs: [tempId]);
+        await _localDataSource.hardDeleteTodo(tempId);
         return left(ServerFailure(message: e.message));
       }
     } else {
@@ -92,8 +83,7 @@ class TodoRepositoryImpl implements TodoRepository {
     int id,
     String title,
   ) async {
-    final cached = await _localDataSource.getCachedTodos();
-    final existing = cached.firstWhere((todo) => todo.id == id);
+    final existing = await _localDataSource.getTodoById(id);
     final updatedLocal = existing.copyWith(title: title, isSynced: false);
     await _localDataSource.updateTodo(updatedLocal);
 
@@ -120,8 +110,7 @@ class TodoRepositoryImpl implements TodoRepository {
     int id,
     bool completed,
   ) async {
-    final cached = await _localDataSource.getCachedTodos();
-    final existing = cached.firstWhere((todo) => todo.id == id);
+    final existing = await _localDataSource.getTodoById(id);
     final updatedLocal = existing.copyWith(
       completed: completed,
       isSynced: false,
@@ -153,8 +142,7 @@ class TodoRepositoryImpl implements TodoRepository {
     if (await _networkInfo.isConnected) {
       try {
         await _remoteDataSource.deleteTodo(id);
-        final db = await _databaseHelper.database;
-        await db.delete('todos', where: 'id = ?', whereArgs: [id]);
+        await _localDataSource.hardDeleteTodo(id);
         return right(false);
       } on ServerException catch (e) {
         await _localDataSource.restoreTodo(id);
@@ -166,23 +154,26 @@ class TodoRepositoryImpl implements TodoRepository {
   }
 
   @override
+  Future<Either<Failure, int>> getPendingDeletedCount() async {
+    try {
+      final count = await _localDataSource.getPendingDeletedCount();
+      return right(count);
+    } catch (e) {
+      return left(CacheFailure(message: e.toString()));
+    }
+  }
+
+  @override
   Future<Either<Failure, Set<int>>> syncPendingChanges() async {
     final syncedIds = <int>{};
     try {
       final pending = await _localDataSource.getPendingSync();
-      final db = await _databaseHelper.database;
       for (final item in pending) {
         try {
-          final rows = await db.query(
-            'todos',
-            where: 'id = ?',
-            whereArgs: [item.id],
-          );
-          if (rows.isEmpty) continue;
-          final isDeleted = (rows.first['is_deleted'] as int) == 1;
+          final isDeleted = await _localDataSource.isTodoDeleted(item.id);
           if (isDeleted) {
             await _remoteDataSource.deleteTodo(item.id);
-            await db.delete('todos', where: 'id = ?', whereArgs: [item.id]);
+            await _localDataSource.hardDeleteTodo(item.id);
           } else {
             await _remoteDataSource.updateTodo(
               item.id,
